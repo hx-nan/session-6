@@ -1,38 +1,16 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: S3 static website.
+Transform: AWS::Serverless-2016-10-31
+Description: S3 -> Lambda grayscale -> S3 (same bucket), loop prevention, no circular deps.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Architectures: [x86_64]
 
 Resources:
-  StaticSiteBucket:
+  ImagesBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "static-site-${AWS::AccountId}"
-      WebsiteConfiguration:
-        IndexDocument: index.html
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        IgnorePublicAcls: true
-        BlockPublicPolicy: false
-        RestrictPublicBuckets: false
-
-  StaticSiteBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref StaticSiteBucket
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: PublicReadForWebsite
-            Effect: Allow
-            Principal: "*"
-            Action:
-              - "s3:GetObject"
-            Resource: !Sub "${StaticSiteBucket.Arn}/*"
-
-Outputs:
-  BucketName:
-    Description: S3 bucket name
-    Value: !Ref StaticSiteBucket
-
-  WebsiteURL:
-    Description: S3 website endpoint
-    Value: !GetAtt StaticSiteBucket.WebsiteURL
+      BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
