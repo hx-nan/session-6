@@ -32,7 +32,7 @@ jobs:
         run: |
           sam build
           sam deploy \
-              --stack-name s3-grayscale-sam \
+              --stack-name s3-grayscale \
               --region us-east-1 \
               --capabilities CAPABILITY_IAM \
               --resolve-s3 \
