@@ -14,3 +14,29 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
+
+  GrayscaleFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          INPUT_PREFIX: incoming/
+          OUTPUT_PREFIX: grayscale/
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
+      Events:
+        ImageUpload:
+          Type: S3
+          Properties:
+            Bucket: !Ref ImagesBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: incoming/
+                  - Name: suffix
+                    Value: .png
