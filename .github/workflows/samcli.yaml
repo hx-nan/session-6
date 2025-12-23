@@ -27,3 +27,14 @@ jobs:
         run: |
           pipx install aws-sam-cli
           sam --version
+
+      - name: SAM Build
+        run: |
+          sam build
+          sam deploy \
+              --stack-name s3-grayscale-sam \
+              --region us-east-1 \
+              --capabilities CAPABILITY_IAM \
+              --resolve-s3 \
+              --no-confirm-changeset \
+              --no-fail-on-empty-changeset
