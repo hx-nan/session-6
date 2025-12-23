@@ -27,3 +27,12 @@ Resources:
             Action:
               - "s3:GetObject"
             Resource: !Sub "${StaticSiteBucket.Arn}/*"
+
+Outputs:
+  BucketName:
+    Description: S3 bucket name
+    Value: !Ref StaticSiteBucket
+
+  WebsiteURL:
+    Description: S3 website endpoint
+    Value: !GetAtt StaticSiteBucket.WebsiteURL
