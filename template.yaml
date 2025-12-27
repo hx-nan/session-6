@@ -40,7 +40,7 @@ Resources:
               Effect: Allow
               Action:
                 - s3:GetObject
-              Resource: !Sub arn:aws:s3:::${ImagesBucket}/incoming/*
+              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
             - Sid: SendToQueue
               Effect: Allow
               Action:
@@ -85,17 +85,17 @@ Resources:
               Effect: Allow
               Action:
                 - s3:GetObject
-              Resource: !Sub arn:aws:s3:::${ImagesBucket}/incoming/*
+              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
             - Sid: WritePredictions
               Effect: Allow
               Action:
                 - s3:PutObject
-              Resource: !Sub arn:aws:s3:::${ImagesBucket}/predictions/*
+              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/predictions/*
             - Sid: ReadPredictionsForIdempotency
               Effect: Allow
               Action:
                 - s3:GetObject
-              Resource: !Sub arn:aws:s3:::${ImagesBucket}/predictions/*
+              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/predictions/*
             - Sid: PollQueue
               Effect: Allow
               Action:
