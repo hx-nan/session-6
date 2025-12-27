@@ -1,7 +1,7 @@
 name: Deploy Serverless function
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "dev" ]
 jobs:
   deploy:
     runs-on: ubuntu-latest
