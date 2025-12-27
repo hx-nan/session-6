@@ -1,13 +1,14 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: S3 -> Lambda grayscale -> S3 (same bucket), loop prevention, no circular deps.
+Description: Async S3->Lambda->SQS->Lambda(HF image classification)->S3, loop prevention + idempotency.
 
 Globals:
   Function:
     Runtime: python3.12
     Timeout: 30
-    MemorySize: 256
+    MemorySize: 512
     Architectures: [x86_64]
+    Tracing: Active
 
 Resources:
   ImagesBucket:
@@ -15,18 +16,36 @@ Resources:
     Properties:
       BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
 
-  GrayscaleFunction:
+  InferenceQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub image-inference-${AWS::AccountId}-${AWS::Region}
+      VisibilityTimeout: 60
+
+  IngestFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/
+      CodeUri: src/ingest/
       Handler: app.lambda_handler
       Environment:
         Variables:
+          QUEUE_URL: !Ref InferenceQueue
           INPUT_PREFIX: incoming/
-          OUTPUT_PREFIX: grayscale/
+          # Suffix filtering is enforced both in S3 event filter and in code (defense-in-depth).
+          ALLOWED_SUFFIXES: ".png,.jpg,.jpeg"
       Policies:
-        - S3CrudPolicy:
-            BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
+        # Least-privilege inline policy
+        - Statement:
+            - Sid: ReadIncomingForHeadEtag
+              Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub arn:aws:s3:::${ImagesBucket}/incoming/*
+            - Sid: SendToQueue
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt InferenceQueue.Arn
       Events:
         ImageUpload:
           Type: S3
@@ -38,5 +57,65 @@ Resources:
                 Rules:
                   - Name: prefix
                     Value: incoming/
+                  # SAM supports one suffix rule; we keep .jpg here and enforce others in code.
                   - Name: suffix
-                    Value: .png
+                    Value: .jpg
+
+  InferFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/infer/
+      Handler: app.lambda_handler
+      Timeout: 60
+      MemorySize: 1024
+      Environment:
+        Variables:
+          INPUT_PREFIX: incoming/
+          OUTPUT_PREFIX: predictions/
+          TOP_K: "3"
+          # Choose any public HF image classification model that the Inference API supports.
+          # Keep it simple for a class lab; students can swap the model_id.
+          HF_MODEL_ID: google/vit-base-patch16-224
+          # Recommended: set HF_TOKEN as a real secret outside the template (e.g., GitHub Actions / SAM deploy env).
+          # If omitted, the Inference API may still work for some models but can be rate-limited.
+          HF_TOKEN: ""
+      Policies:
+        - Statement:
+            - Sid: ReadIncomingImages
+              Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub arn:aws:s3:::${ImagesBucket}/incoming/*
+            - Sid: WritePredictions
+              Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub arn:aws:s3:::${ImagesBucket}/predictions/*
+            - Sid: ReadPredictionsForIdempotency
+              Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub arn:aws:s3:::${ImagesBucket}/predictions/*
+            - Sid: PollQueue
+              Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+                - sqs:ChangeMessageVisibility
+              Resource: !GetAtt InferenceQueue.Arn
+      Events:
+        FromQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt InferenceQueue.Arn
+            BatchSize: 1
+
+Outputs:
+  BucketName:
+    Description: S3 bucket name
+    Value: !Ref ImagesBucket
+
+  QueueUrl:
+    Description: SQS queue URL
+    Value: !Ref InferenceQueue
