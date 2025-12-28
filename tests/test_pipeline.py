@@ -12,7 +12,7 @@ import boto3
 import pytest
 from botocore.exceptions import ClientError
 
-STACK_NAME = os.getenv("STACK_NAME", "lab2-async-metadata")
+STACK_NAME = os.getenv("STACK_NAME", "s3-infer")
 TEST_IMAGE_KEY = os.getenv("TEST_IMAGE_KEY", "incoming/tiny.jpg")
 POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "180"))
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
