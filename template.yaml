@@ -43,7 +43,7 @@ Resources:
               Action:
                 - s3:GetObject
                 - s3:HeadObject
-              Resource: !Sub ${ImagesBucket.Arn}/incoming/*
+              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
       Events:
         IncomingImages:
           Type: S3
@@ -79,14 +79,14 @@ Resources:
               Action:
                 - s3:GetObject
                 - s3:HeadObject
-              Resource: !Sub ${ImagesBucket.Arn}/incoming/*
+              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
             - Sid: AllowMetadataWrite
               Effect: Allow
               Action:
                 - s3:PutObject
                 - s3:HeadObject
                 - s3:GetObject
-              Resource: !Sub ${ImagesBucket.Arn}/metadata/*
+              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/metadata/*
       Events:
         MetadataQueueEvent:
           Type: SQS
