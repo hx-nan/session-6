@@ -96,6 +96,15 @@ Resources:
               Action:
                 - s3:GetObject
               Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/predictions/*
+            - Sid: ListPredictionsForIdempotency
+              Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}
+              Condition:
+                StringLike:
+                  s3:prefix:
+                    - predictions/*
             - Sid: PollQueue
               Effect: Allow
               Action:
