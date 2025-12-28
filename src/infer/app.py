@@ -1,11 +1,13 @@
+import io
 import json
 import os
 import time
-import urllib.request
-import urllib.error
 from typing import Any, Dict, List
 
 import boto3
+import torch
+from PIL import Image
+from transformers import AutoImageProcessor, AutoModelForImageClassification
 
 s3 = boto3.client("s3")
 
@@ -13,9 +15,11 @@ INPUT_PREFIX = os.environ.get("INPUT_PREFIX", "incoming/")
 OUTPUT_PREFIX = os.environ.get("OUTPUT_PREFIX", "predictions/")
 TOP_K = int(os.environ.get("TOP_K", "3"))
 HF_MODEL_ID = os.environ.get("HF_MODEL_ID", "google/vit-base-patch16-224")
-HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
+MODEL_CACHE_DIR = os.environ.get("MODEL_CACHE_DIR", "/tmp/hf-model")
 
-HF_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL_ID}"
+_processor = None
+_model = None
+_model_device = torch.device("cpu")
 
 def _prediction_key_for(source_key: str) -> str:
     # Keep the original filename but append .json
@@ -36,45 +40,39 @@ def _head_object_exists(bucket: str, key: str) -> bool:
             return False
         raise
 
-def _hf_classify(image_bytes: bytes, top_k: int) -> List[Dict[str, Any]]:
-    headers = {
-        "Content-Type": "application/octet-stream",
-    }
-    if HF_TOKEN:
-        headers["Authorization"] = f"Bearer {HF_TOKEN}"
+def _ensure_model_loaded() -> None:
+    global _processor, _model
+    if _processor is not None and _model is not None:
+        return
 
-    # Ask for top_k results if supported; the Inference API accepts parameters for many pipelines.
-    payload = {
-        "inputs": None,  # we send raw bytes, so inputs is implicit
-        "parameters": {"top_k": top_k},
-        "options": {"wait_for_model": True},
-    }
+    os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+    _processor = AutoImageProcessor.from_pretrained(HF_MODEL_ID, cache_dir=MODEL_CACHE_DIR)
+    _model = AutoModelForImageClassification.from_pretrained(HF_MODEL_ID, cache_dir=MODEL_CACHE_DIR)
+    _model.eval()
 
-    # The HF Inference API supports raw bytes directly.
-    # However, passing JSON + bytes together isn't standard. The simplest reliable approach:
-    # Send image bytes only, and accept default top_k behavior; then slice top_k in code.
-    # (Some models accept params, but consistency varies.)
-    req = urllib.request.Request(HF_URL, data=image_bytes, headers=headers, method="POST")
 
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            body = resp.read()
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HF HTTPError {e.code}: {err_body}") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"HF URLError: {str(e)}") from e
+def _local_classify(image_bytes: bytes, top_k: int) -> List[Dict[str, Any]]:
+    _ensure_model_loaded()
 
-    decoded = json.loads(body.decode("utf-8"))
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        inputs = _processor(images=img, return_tensors="pt")
 
-    # Typical response for image classification: list[{"label": "...", "score": 0.99}, ...]
-    if isinstance(decoded, dict) and decoded.get("error"):
-        raise RuntimeError(f"HF error: {decoded.get('error')}")
+    inputs = {k: v.to(_model_device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = _model(**inputs)
+        probs = torch.nn.functional.softmax(outputs.logits, dim=-1)[0]
 
-    if not isinstance(decoded, list):
-        raise RuntimeError(f"Unexpected HF response shape: {type(decoded)}")
+    k = max(1, min(top_k, probs.shape[-1]))
+    values, indices = torch.topk(probs, k)
 
-    return decoded[:top_k]
+    id2label = getattr(_model.config, "id2label", {}) or {}
+    results = []
+    for score, idx in zip(values.tolist(), indices.tolist()):
+        label = id2label.get(idx, str(idx))
+        results.append({"label": label, "score": float(score)})
+    return results
 
 def lambda_handler(event, context):
     records = event.get("Records", [])
@@ -103,7 +101,7 @@ def lambda_handler(event, context):
         image_bytes = obj["Body"].read()
 
         t0 = time.time()
-        preds = _hf_classify(image_bytes=image_bytes, top_k=TOP_K)
+        preds = _local_classify(image_bytes=image_bytes, top_k=TOP_K)
         inference_ms = int((time.time() - t0) * 1000)
 
         output_doc = {
