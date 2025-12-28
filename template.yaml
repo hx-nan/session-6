@@ -42,8 +42,7 @@ Resources:
               Effect: Allow
               Action:
                 - s3:GetObject
-                - s3:HeadObject
-              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
+              Resource: !Sub arn:${AWS::Partition}:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
       Events:
         IncomingImages:
           Type: S3
@@ -65,6 +64,7 @@ Resources:
       Environment:
         Variables:
           METADATA_PREFIX: metadata/
+          DESTINATION_BUCKET: !Sub images-${AWS::AccountId}-${AWS::Region}
       Policies:
         - Statement:
             - Sid: AllowQueueConsume
@@ -78,15 +78,21 @@ Resources:
               Effect: Allow
               Action:
                 - s3:GetObject
-                - s3:HeadObject
-              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
+              Resource: !Sub arn:${AWS::Partition}:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
             - Sid: AllowMetadataWrite
               Effect: Allow
               Action:
                 - s3:PutObject
-                - s3:HeadObject
                 - s3:GetObject
-              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/metadata/*
+              Resource: !Sub arn:${AWS::Partition}:s3:::images-${AWS::AccountId}-${AWS::Region}/metadata/*
+            - Sid: AllowMetadataList
+              Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub arn:${AWS::Partition}:s3:::images-${AWS::AccountId}-${AWS::Region}
+              Condition:
+                StringLike:
+                  's3:prefix':
+                    - metadata/*
       Events:
         MetadataQueueEvent:
           Type: SQS
