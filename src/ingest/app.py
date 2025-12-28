@@ -1,67 +1,92 @@
+"""Ingest Lambda for the async metadata pipeline."""
+
+from __future__ import annotations
+
 import json
+import logging
 import os
 import urllib.parse
-from datetime import datetime, timezone
+from typing import Any, Dict
 
 import boto3
+from botocore.exceptions import ClientError
 
-s3 = boto3.client("s3")
-sqs = boto3.client("sqs")
+LOGGER = logging.getLogger()
+LOGGER.setLevel(logging.INFO)
+
+SQS = boto3.client("sqs")
+S3 = boto3.client("s3")
 
 QUEUE_URL = os.environ["QUEUE_URL"]
-INPUT_PREFIX = os.environ.get("INPUT_PREFIX", "incoming/")
-ALLOWED_SUFFIXES = tuple(
-    s.strip().lower()
-    for s in os.environ.get("ALLOWED_SUFFIXES", ".png,.jpg,.jpeg").split(",")
-    if s.strip()
-)
+VALID_EXTENSIONS = (".jpg", ".jpeg", ".png")
+EXPECTED_PREFIX = "incoming/"
 
-def _is_allowed_key(key: str) -> bool:
-    k = key.lower()
-    return k.startswith(INPUT_PREFIX) and k.endswith(ALLOWED_SUFFIXES)
 
-def lambda_handler(event, context):
+def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """Entry point for the Lambda triggered by S3 notifications."""
     records = event.get("Records", [])
-    enqueued = 0
-    skipped = 0
+    sent = 0
 
-    for r in records:
-        if r.get("eventSource") != "aws:s3":
-            skipped += 1
-            continue
+    for record in records:
+        if handle_record(record, context):
+            sent += 1
 
-        bucket = r["s3"]["bucket"]["name"]
-        # S3 keys are URL-encoded in events
-        key = urllib.parse.unquote_plus(r["s3"]["object"]["key"])
+    return {"records": len(records), "sent": sent}
 
-        if not _is_allowed_key(key):
-            skipped += 1
-            continue
 
-        # Get ETag (useful for idempotency + traceability)
-        try:
-            head = s3.head_object(Bucket=bucket, Key=key)
-            etag = (head.get("ETag") or "").strip('"')
-        except Exception:
-            # If head fails, still enqueue; inference lambda can proceed or fail/retry.
-            etag = ""
+def handle_record(record: Dict[str, Any], context: Any) -> bool:
+    """Validate the S3 record and enqueue a metadata task."""
+    bucket = record.get("s3", {}).get("bucket", {}).get("name")
+    raw_key = record.get("s3", {}).get("object", {}).get("key")
+    if not bucket or not raw_key:
+        LOGGER.warning("malformed record: %s", record)
+        return False
 
-        msg = {
-            "bucket": bucket,
-            "key": key,
-            "etag": etag,
-            "event_time": datetime.now(timezone.utc).isoformat(),
-            "request_id": getattr(context, "aws_request_id", ""),
-        }
+    key = urllib.parse.unquote_plus(raw_key)
+    normalized = key.lower()
+    if not normalized.startswith(EXPECTED_PREFIX):
+        LOGGER.info("Skipping key outside prefix: %s", key)
+        return False
+    if not normalized.endswith(VALID_EXTENSIONS):
+        LOGGER.info("Skipping non-image key: %s", key)
+        return False
 
-        sqs.send_message(
-            QueueUrl=QUEUE_URL,
-            MessageBody=json.dumps(msg),
-        )
-        enqueued += 1
+    etag = record.get("s3", {}).get("object", {}).get("eTag")
+    etag = etag.strip('"') if isinstance(etag, str) else None
+    if not etag:
+        etag = fetch_object_etag(bucket, key)
 
-    return {
-        "statusCode": 200,
-        "enqueued": enqueued,
-        "skipped": skipped,
+    payload = {
+        "bucket": bucket,
+        "key": key,
+        "etag": etag,
+        "event_time": record.get("eventTime"),
+        "request_id": _resolve_request_id(record, context),
     }
+
+    SQS.send_message(QueueUrl=QUEUE_URL, MessageBody=json.dumps(payload))
+    LOGGER.info("Enqueued metadata request for %s/%s", bucket, key)
+    return True
+
+
+def fetch_object_etag(bucket: str, key: str) -> str | None:
+    """Attempt to fetch the object's ETag for downstream validation."""
+    try:
+        response = S3.head_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        error = exc.response.get("Error", {}).get("Code")
+        if error in {"404", "NotFound", "NoSuchKey"}:
+            LOGGER.warning("Object vanished before head_object %s/%s", bucket, key)
+            return None
+        LOGGER.warning("head_object failed for %s/%s: %s", bucket, key, exc)
+        return None
+    etag = response.get("ETag")
+    return etag.strip('"') if isinstance(etag, str) else etag
+
+
+def _resolve_request_id(record: Dict[str, Any], context: Any) -> str | None:
+    response_elements = record.get("responseElements") or {}
+    request_id = response_elements.get("x-amz-request-id")
+    if request_id:
+        return request_id
+    return getattr(context, "aws_request_id", None)

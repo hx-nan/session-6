@@ -1,13 +1,14 @@
-AWSTemplateFormatVersion: "2010-09-09"
+AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Async S3->Lambda->SQS->Lambda(HF image classification)->S3, loop prevention + idempotency.
+Description: >-
+  Lab 2 - Async Image Metadata Pipeline. Upload images to incoming/,
+  inspect metadata asynchronously, and persist metadata/ JSON outputs.
 
 Globals:
   Function:
     Runtime: python3.12
-    Timeout: 30
-    MemorySize: 512
-    Architectures: [x86_64]
+    Timeout: 60
+    MemorySize: 256
     Tracing: Active
 
 Resources:
@@ -16,38 +17,35 @@ Resources:
     Properties:
       BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
 
-  InferenceQueue:
+  MetadataQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub image-inference-${AWS::AccountId}-${AWS::Region}
-      VisibilityTimeout: 60
+      QueueName: !Sub image-metadata-${AWS::AccountId}-${AWS::Region}
+      VisibilityTimeout: 120
 
   IngestFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/ingest/
+      CodeUri: src/ingest
       Handler: app.lambda_handler
+      Description: Validates incoming image uploads and forwards metadata requests.
       Environment:
         Variables:
-          QUEUE_URL: !Ref InferenceQueue
-          INPUT_PREFIX: incoming/
-          # Suffix filtering is enforced both in S3 event filter and in code (defense-in-depth).
-          ALLOWED_SUFFIXES: ".png,.jpg,.jpeg"
+          QUEUE_URL: !Ref MetadataQueue
       Policies:
-        # Least-privilege inline policy
         - Statement:
-            - Sid: ReadIncomingForHeadEtag
+            - Sid: AllowQueueSend
+              Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt MetadataQueue.Arn
+            - Sid: AllowIncomingRead
               Effect: Allow
               Action:
                 - s3:GetObject
-              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
-            - Sid: SendToQueue
-              Effect: Allow
-              Action:
-                - sqs:SendMessage
-              Resource: !GetAtt InferenceQueue.Arn
+                - s3:HeadObject
+              Resource: !Sub ${ImagesBucket.Arn}/incoming/*
       Events:
-        ImageUpload:
+        IncomingImages:
           Type: S3
           Properties:
             Bucket: !Ref ImagesBucket
@@ -57,74 +55,53 @@ Resources:
                 Rules:
                   - Name: prefix
                     Value: incoming/
-                  # SAM supports one suffix rule; we keep .jpg here and enforce others in code.
-                  - Name: suffix
-                    Value: .jpg
 
-  InferFunction:
+  MetadataFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/infer/
+      CodeUri: src/metadata
       Handler: app.lambda_handler
-      Timeout: 60
-      MemorySize: 1024
+      Description: Consumes queue messages, reads images, and writes metadata JSON.
       Environment:
         Variables:
-          INPUT_PREFIX: incoming/
-          OUTPUT_PREFIX: predictions/
-          TOP_K: "3"
-          # Choose any public HF image classification model that the Inference API supports.
-          # Keep it simple for a class lab; students can swap the model_id.
-          HF_MODEL_ID: google/vit-base-patch16-224
-          # Recommended: set HF_TOKEN as a real secret outside the template (e.g., GitHub Actions / SAM deploy env).
-          # If omitted, the Inference API may still work for some models but can be rate-limited.
-          HF_TOKEN: ""
+          METADATA_PREFIX: metadata/
       Policies:
         - Statement:
-            - Sid: ReadIncomingImages
-              Effect: Allow
-              Action:
-                - s3:GetObject
-              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/incoming/*
-            - Sid: WritePredictions
-              Effect: Allow
-              Action:
-                - s3:PutObject
-              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/predictions/*
-            - Sid: ReadPredictionsForIdempotency
-              Effect: Allow
-              Action:
-                - s3:GetObject
-              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}/predictions/*
-            - Sid: ListPredictionsForIdempotency
-              Effect: Allow
-              Action:
-                - s3:ListBucket
-              Resource: !Sub arn:aws:s3:::images-${AWS::AccountId}-${AWS::Region}
-              Condition:
-                StringLike:
-                  s3:prefix:
-                    - predictions/*
-            - Sid: PollQueue
+            - Sid: AllowQueueConsume
               Effect: Allow
               Action:
                 - sqs:ReceiveMessage
                 - sqs:DeleteMessage
                 - sqs:GetQueueAttributes
-                - sqs:ChangeMessageVisibility
-              Resource: !GetAtt InferenceQueue.Arn
+              Resource: !GetAtt MetadataQueue.Arn
+            - Sid: AllowIncomingRead
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:HeadObject
+              Resource: !Sub ${ImagesBucket.Arn}/incoming/*
+            - Sid: AllowMetadataWrite
+              Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:HeadObject
+                - s3:GetObject
+              Resource: !Sub ${ImagesBucket.Arn}/metadata/*
       Events:
-        FromQueue:
+        MetadataQueueEvent:
           Type: SQS
           Properties:
-            Queue: !GetAtt InferenceQueue.Arn
+            Queue: !GetAtt MetadataQueue.Arn
             BatchSize: 1
+            MaximumBatchingWindowInSeconds: 0
 
 Outputs:
   BucketName:
-    Description: S3 bucket name
+    Description: Images bucket for uploads and metadata outputs.
     Value: !Ref ImagesBucket
-
   QueueUrl:
-    Description: SQS queue URL
-    Value: !Ref InferenceQueue
+    Description: URL for the metadata processing queue.
+    Value: !Ref MetadataQueue
+  QueueArn:
+    Description: ARN for the metadata queue.
+    Value: !GetAtt MetadataQueue.Arn
