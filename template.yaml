@@ -1,42 +1,103 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: S3 -> Lambda grayscale -> S3 (same bucket), loop prevention, no circular deps.
+Description: Aurora Serverless v1 Username Registrar (API Gateway + Lambda + Data API)
 
 Globals:
   Function:
     Runtime: python3.12
-    Timeout: 30
-    MemorySize: 256
-    Architectures: [x86_64]
+    Timeout: 10
+    MemorySize: 128
+    Tracing: Active
 
 Resources:
-  ImagesBucket:
-    Type: AWS::S3::Bucket
+  Api:
+    Type: AWS::Serverless::Api
     Properties:
-      BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
+      StageName: prod
 
-  GrayscaleFunction:
+  DbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: aurora-registrar-secret
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"admin"}'
+        GenerateStringKey: "password"
+        PasswordLength: 24
+        ExcludePunctuation: true
+
+  DbCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-mysql
+      EngineMode: serverless
+      DatabaseName: appdb
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
+      EnableHttpEndpoint: true
+      ScalingConfiguration:
+        AutoPause: true
+        MinCapacity: 1
+        MaxCapacity: 2
+        SecondsUntilAutoPause: 300
+
+  InitSchemaFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Handler: app.init_schema_handler
       CodeUri: src/
-      Handler: app.lambda_handler
       Environment:
         Variables:
-          INPUT_PREFIX: incoming/
-          OUTPUT_PREFIX: grayscale/
+          DB_ARN: !Ref DbCluster
+          SECRET_ARN: !Ref DbSecret
+          DB_NAME: appdb
       Policies:
-        - S3CrudPolicy:
-            BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecret
+
+  InitSchema:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt InitSchemaFunction.Arn
+
+  RegisterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.register_handler
+      CodeUri: src/
+      Environment:
+        Variables:
+          DB_ARN: !Ref DbCluster
+          SECRET_ARN: !Ref DbSecret
+          DB_NAME: appdb
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecret
       Events:
-        ImageUpload:
-          Type: S3
+        Register:
+          Type: Api
           Properties:
-            Bucket: !Ref ImagesBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: prefix
-                    Value: incoming/
-                  - Name: suffix
-                    Value: .png
+            RestApiId: !Ref Api
+            Path: /register
+            Method: POST
+
+Outputs:
+  ApiBaseUrl:
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  DbClusterArn:
+    Value: !Ref DbCluster
+  SecretArn:
+    Value: !Ref DbSecret

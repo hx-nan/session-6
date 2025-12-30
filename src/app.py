@@ -1,63 +1,47 @@
+import json
 import os
-import io
-import urllib.parse
-
 import boto3
-from PIL import Image, ImageOps
 
-s3 = boto3.client("s3")
+rds = boto3.client("rds-data")
 
-INPUT_PREFIX = os.environ.get("INPUT_PREFIX", "incoming/")
-OUTPUT_PREFIX = os.environ.get("OUTPUT_PREFIX", "grayscale/")
+DB_ARN = os.environ["DB_ARN"]
+SECRET_ARN = os.environ["SECRET_ARN"]
+DB_NAME = os.environ["DB_NAME"]
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS registrations (
+  username VARCHAR(64) PRIMARY KEY,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
 
 
-def lambda_handler(event, context):
-    # S3 Put event
-    record = event["Records"][0]
-    bucket = record["s3"]["bucket"]["name"]
-    key = urllib.parse.unquote_plus(record["s3"]["object"]["key"])
-
-    # Guard 1: never re-process outputs
-    if key.startswith(OUTPUT_PREFIX):
-        return {"status": "skipped", "reason": "already output prefix", "key": key}
-
-    # Guard 2: only handle intended input prefix (extra safety beyond S3 filter)
-    if not key.startswith(INPUT_PREFIX):
-        return {"status": "skipped", "reason": "not input prefix", "key": key}
-
-    # Basic extension check (optional but helpful)
-    lower = key.lower()
-    if not (lower.endswith(".png") or lower.endswith(".jpg") or lower.endswith(".jpeg")):
-        return {"status": "skipped", "reason": "not an image extension", "key": key}
-
-    # Download image
-    obj = s3.get_object(Bucket=bucket, Key=key)
-    data = obj["Body"].read()
-
-    # Convert to grayscale
-    img = Image.open(io.BytesIO(data))
-    img = ImageOps.grayscale(img)
-
-    # Preserve extension; choose an output key under OUTPUT_PREFIX
-    filename = key.split("/")[-1]
-    out_key = f"{OUTPUT_PREFIX}{filename}"
-
-    # Encode and upload
-    out_buf = io.BytesIO()
-    # If PNG keep PNG; otherwise save as JPEG
-    if lower.endswith(".png"):
-        img.save(out_buf, format="PNG")
-        content_type = "image/png"
-    else:
-        img.save(out_buf, format="JPEG", quality=90)
-        content_type = "image/jpeg"
-
-    out_buf.seek(0)
-    s3.put_object(
-        Bucket=bucket,
-        Key=out_key,
-        Body=out_buf.getvalue(),
-        ContentType=content_type,
+def init_schema_handler(event, context):
+    # CloudFormation custom resource: run once on create/update
+    rds.execute_statement(
+        resourceArn=DB_ARN,
+        secretArn=SECRET_ARN,
+        database=DB_NAME,
+        sql=SCHEMA_SQL,
     )
+    # Minimal custom resource response (enough for CFN)
+    return {"PhysicalResourceId": "InitSchema", "Data": {"status": "ok"}}
 
-    return {"status": "ok", "input": key, "output": out_key}
+
+def register_handler(event, context):
+    body = json.loads(event["body"])
+    username = body["username"]
+
+    try:
+        rds.execute_statement(
+            resourceArn=DB_ARN,
+            secretArn=SECRET_ARN,
+            database=DB_NAME,
+            sql="INSERT INTO registrations (username) VALUES (:u);",
+            parameters=[{"name": "u", "value": {"stringValue": username}}],
+        )
+        return {"statusCode": 201, "body": json.dumps({"username": username, "status": "reserved"})}
+    except Exception:
+        # In the “small lab” spirit: treat any insert error as "taken".
+        # In a production version you'd inspect the SQL error code.
+        return {"statusCode": 409, "body": json.dumps({"username": username, "status": "taken"})}
