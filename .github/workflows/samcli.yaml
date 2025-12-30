@@ -41,7 +41,7 @@ jobs:
           sam build --use-container
 
           sam deploy \
-            --stack-name registrar-app \
+            --stack-name rds-app \
             --resolve-s3 \
             --capabilities CAPABILITY_IAM \
             --region us-east-1 \
