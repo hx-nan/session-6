@@ -1,11 +1,11 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Infra stack (VPC + Aurora PostgreSQL Serverless v2 + Secret + Data API)
+Description: Infra stack for Registrar lab (VPC + private subnets + SGs + RDS Postgres)
 
 Resources:
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: 10.10.0.0/16
+      CidrBlock: 10.30.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
 
@@ -13,7 +13,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: 10.10.1.0/24
+      CidrBlock: 10.30.1.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
       MapPublicIpOnLaunch: false
 
@@ -21,67 +21,93 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: 10.10.2.0/24
+      CidrBlock: 10.30.2.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
       MapPublicIpOnLaunch: false
+
+  LambdaSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda SG for Registrar app
+      VpcId: !Ref Vpc
 
   DbSg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Aurora SG (Data API, no inbound needed)
+      GroupDescription: RDS Postgres SG (allow 5432 from Lambda SG only)
       VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSg
 
   DbSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
-      DBSubnetGroupDescription: Aurora subnets
+      DBSubnetGroupDescription: Subnets for RDS Postgres
       SubnetIds: [!Ref SubnetA, !Ref SubnetB]
 
-  DbSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: aurora-registrar-secret
-      GenerateSecretString:
-        SecretStringTemplate: '{"username":"postgres"}'
-        GenerateStringKey: "password"
-        PasswordLength: 24
-        ExcludePunctuation: true
-
-  DbCluster:
-    Type: AWS::RDS::DBCluster
-    Properties:
-      Engine: aurora-postgresql
-      EngineMode: provisioned
-      DatabaseName: appdb
-      EnableHttpEndpoint: true
-      DBSubnetGroupName: !Ref DbSubnetGroup
-      VpcSecurityGroupIds: [!Ref DbSg]
-      MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
-      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
-      ServerlessV2ScalingConfiguration:
-        MinCapacity: 0.5
-        MaxCapacity: 1
-
-  DbInstanceWriter:
+  DbInstance:
     Type: AWS::RDS::DBInstance
     Properties:
-      Engine: aurora-postgresql
-      DBClusterIdentifier: !Ref DbCluster
-      DBInstanceClass: db.serverless
+      Engine: postgres
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp2
       PubliclyAccessible: false
+      MultiAZ: false
+      DBName: appdb
+      MasterUsername: postgres
+      MasterUserPassword: PostgresPass123!
+      VPCSecurityGroups: [!Ref DbSg]
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      BackupRetentionPeriod: 0
+      DeleteAutomatedBackups: true
+      DeletionProtection: false
 
 Outputs:
-  DbClusterArn:
-    Value: !GetAtt DbCluster.DBClusterArn
+  VpcId:
+    Value: !Ref Vpc
     Export:
-      Name: AuroraRegistrar-DbClusterArn
+      Name: Registrar-VpcId
 
-  SecretArn:
-    Value: !Ref DbSecret
+  SubnetAId:
+    Value: !Ref SubnetA
     Export:
-      Name: AuroraRegistrar-SecretArn
+      Name: Registrar-SubnetAId
+
+  SubnetBId:
+    Value: !Ref SubnetB
+    Export:
+      Name: Registrar-SubnetBId
+
+  LambdaSgId:
+    Value: !Ref LambdaSg
+    Export:
+      Name: Registrar-LambdaSgId
+
+  DbHost:
+    Value: !GetAtt DbInstance.Endpoint.Address
+    Export:
+      Name: Registrar-DbHost
+
+  DbPort:
+    Value: !GetAtt DbInstance.Endpoint.Port
+    Export:
+      Name: Registrar-DbPort
 
   DbName:
     Value: appdb
     Export:
-      Name: AuroraRegistrar-DbName
+      Name: Registrar-DbName
+
+  DbUser:
+    Value: postgres
+    Export:
+      Name: Registrar-DbUser
+
+  DbPass:
+    Value: PostgresPass123!
+    Export:
+      Name: Registrar-DbPass
