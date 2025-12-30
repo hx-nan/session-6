@@ -1,63 +1,67 @@
+import json
 import os
-import io
-import urllib.parse
+import time
+import secrets
+import string
 
 import boto3
-from PIL import Image, ImageOps
 
-s3 = boto3.client("s3")
+TABLE_NAME = os.environ["TABLE_NAME"]
+CODE_LENGTH = 7
 
-INPUT_PREFIX = os.environ.get("INPUT_PREFIX", "incoming/")
-OUTPUT_PREFIX = os.environ.get("OUTPUT_PREFIX", "grayscale/")
+dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table(TABLE_NAME)
+
+ALPHABET = string.ascii_letters + string.digits
 
 
-def lambda_handler(event, context):
-    # S3 Put event
-    record = event["Records"][0]
-    bucket = record["s3"]["bucket"]["name"]
-    key = urllib.parse.unquote_plus(record["s3"]["object"]["key"])
+def _new_code():
+    return "".join(secrets.choice(ALPHABET) for _ in range(CODE_LENGTH))
 
-    # Guard 1: never re-process outputs
-    if key.startswith(OUTPUT_PREFIX):
-        return {"status": "skipped", "reason": "already output prefix", "key": key}
 
-    # Guard 2: only handle intended input prefix (extra safety beyond S3 filter)
-    if not key.startswith(INPUT_PREFIX):
-        return {"status": "skipped", "reason": "not input prefix", "key": key}
+def create_handler(event, context):
+    """
+    POST /shorten
+    Body: {"url": "https://example.com"}
+    """
+    body = json.loads(event["body"])
+    long_url = body["url"]
 
-    # Basic extension check (optional but helpful)
-    lower = key.lower()
-    if not (lower.endswith(".png") or lower.endswith(".jpg") or lower.endswith(".jpeg")):
-        return {"status": "skipped", "reason": "not an image extension", "key": key}
+    code = _new_code()
+    now = int(time.time())
 
-    # Download image
-    obj = s3.get_object(Bucket=bucket, Key=key)
-    data = obj["Body"].read()
-
-    # Convert to grayscale
-    img = Image.open(io.BytesIO(data))
-    img = ImageOps.grayscale(img)
-
-    # Preserve extension; choose an output key under OUTPUT_PREFIX
-    filename = key.split("/")[-1]
-    out_key = f"{OUTPUT_PREFIX}{filename}"
-
-    # Encode and upload
-    out_buf = io.BytesIO()
-    # If PNG keep PNG; otherwise save as JPEG
-    if lower.endswith(".png"):
-        img.save(out_buf, format="PNG")
-        content_type = "image/png"
-    else:
-        img.save(out_buf, format="JPEG", quality=90)
-        content_type = "image/jpeg"
-
-    out_buf.seek(0)
-    s3.put_object(
-        Bucket=bucket,
-        Key=out_key,
-        Body=out_buf.getvalue(),
-        ContentType=content_type,
+    table.put_item(
+        Item={
+            "code": code,
+            "long_url": long_url,
+            "created_at": now,
+            "expires_at": now + 7 * 24 * 60 * 60,  # 7 days TTL
+        },
+        ConditionExpression="attribute_not_exists(code)",
     )
 
-    return {"status": "ok", "input": key, "output": out_key}
+    rc = event["requestContext"]
+    short_url = f"https://{rc['domainName']}/{rc['stage']}/{code}"
+
+    return {
+        "statusCode": 201,
+        "body": json.dumps({"code": code, "short_url": short_url}),
+    }
+
+
+def resolve_handler(event, context):
+    """
+    GET /{code}
+    """
+    code = event["pathParameters"]["code"]
+
+    resp = table.get_item(
+        Key={"code": code},
+        ConsistentRead=True,
+    )
+
+    return {
+        "statusCode": 302,
+        "headers": {"Location": resp["Item"]["long_url"]},
+        "body": "",
+    }

@@ -1,42 +1,73 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: S3 -> Lambda grayscale -> S3 (same bucket), loop prevention, no circular deps.
+Description: Serverless URL Shortener (API Gateway + Lambda + DynamoDB)
 
 Globals:
   Function:
     Runtime: python3.12
-    Timeout: 30
-    MemorySize: 256
-    Architectures: [x86_64]
+    Timeout: 10
+    MemorySize: 128
+    Tracing: Active
+    Environment:
+      Variables:
+        TABLE_NAME: UrlShortenerTable
 
 Resources:
-  ImagesBucket:
-    Type: AWS::S3::Bucket
+  Api:
+    Type: AWS::Serverless::Api
     Properties:
-      BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
+      StageName: prod
 
-  GrayscaleFunction:
+  UrlShortenerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: UrlShortenerTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: code
+          AttributeType: S
+      KeySchema:
+        - AttributeName: code
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  CreateShortUrlFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: CreateShortUrlFunction
+      Handler: app.create_handler
       CodeUri: src/
-      Handler: app.lambda_handler
-      Environment:
-        Variables:
-          INPUT_PREFIX: incoming/
-          OUTPUT_PREFIX: grayscale/
       Policies:
-        - S3CrudPolicy:
-            BucketName: !Sub images-${AWS::AccountId}-${AWS::Region}
+        - DynamoDBWritePolicy:
+            TableName: UrlShortenerTable
       Events:
-        ImageUpload:
-          Type: S3
+        Create:
+          Type: Api
           Properties:
-            Bucket: !Ref ImagesBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: prefix
-                    Value: incoming/
-                  - Name: suffix
-                    Value: .png
+            RestApiId: !Ref Api
+            Path: /shorten
+            Method: POST
+
+  ResolveShortUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ResolveShortUrlFunction
+      Handler: app.resolve_handler
+      CodeUri: src/
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: UrlShortenerTable
+      Events:
+        Resolve:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /{code}
+            Method: GET
+
+Outputs:
+  ApiBaseUrl:
+    Description: Base URL for the API stage
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod"
