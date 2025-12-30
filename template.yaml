@@ -34,6 +34,7 @@ Resources:
       MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
       MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
       EnableHttpEndpoint: true
+      WithExpressConfiguration: true
       ScalingConfiguration:
         AutoPause: true
         MinCapacity: 2
