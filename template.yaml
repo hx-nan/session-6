@@ -1,13 +1,12 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Aurora Serverless v1 (PostgreSQL) Username Registrar (API Gateway + Lambda + Data API)
+Description: Registrar App stack (API Gateway + Lambda in VPC + RDS Postgres)
 
 Globals:
   Function:
     Runtime: python3.12
-    Timeout: 10
+    Timeout: 15
     MemorySize: 128
-    Tracing: Active
 
 Resources:
   Api:
@@ -15,47 +14,36 @@ Resources:
     Properties:
       StageName: prod
 
-  DbSecret:
-    Type: AWS::SecretsManager::Secret
+  PsycopgLayer:
+    Type: AWS::Serverless::LayerVersion
     Properties:
-      Name: aurora-registrar-secret
-      GenerateSecretString:
-        SecretStringTemplate: '{"username":"postgres"}'
-        GenerateStringKey: "password"
-        PasswordLength: 24
-        ExcludePunctuation: true
-
-  DbCluster:
-    Type: AWS::RDS::DBCluster
-    Properties:
-      Engine: aurora-postgresql
-      EngineMode: serverless
-      DatabaseName: appdb
-      MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
-      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
-      EnableHttpEndpoint: true
-
+      LayerName: registrar-psycopg-layer
+      ContentUri: layer/
+      CompatibleRuntimes: [python3.12]
+    Metadata:
+      BuildMethod: python3.12
 
   InitSchemaFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: app.init_schema_handler
       CodeUri: src/
+      Layers: [!Ref PsycopgLayer]
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSLambdaVPCAccessExecutionRole
+      VpcConfig:
+        SecurityGroupIds: [!ImportValue Registrar-LambdaSgId]
+        SubnetIds:
+          - !ImportValue Registrar-SubnetAId
+          - !ImportValue Registrar-SubnetBId
       Environment:
         Variables:
-          DB_ARN: !Ref DbCluster
-          SECRET_ARN: !Ref DbSecret
-          DB_NAME: appdb
-      Policies:
-        - Statement:
-            - Effect: Allow
-              Action:
-                - rds-data:ExecuteStatement
-              Resource: "*"
-            - Effect: Allow
-              Action:
-                - secretsmanager:GetSecretValue
-              Resource: !Ref DbSecret
+          DB_HOST: !ImportValue Registrar-DbHost
+          DB_PORT: !ImportValue Registrar-DbPort
+          DB_NAME: !ImportValue Registrar-DbName
+          DB_USER: !ImportValue Registrar-DbUser
+          DB_PASS: !ImportValue Registrar-DbPass
 
   InitSchema:
     Type: AWS::CloudFormation::CustomResource
@@ -67,21 +55,22 @@ Resources:
     Properties:
       Handler: app.register_handler
       CodeUri: src/
+      Layers: [!Ref PsycopgLayer]
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSLambdaVPCAccessExecutionRole
+      VpcConfig:
+        SecurityGroupIds: [!ImportValue Registrar-LambdaSgId]
+        SubnetIds:
+          - !ImportValue Registrar-SubnetAId
+          - !ImportValue Registrar-SubnetBId
       Environment:
         Variables:
-          DB_ARN: !Ref DbCluster
-          SECRET_ARN: !Ref DbSecret
-          DB_NAME: appdb
-      Policies:
-        - Statement:
-            - Effect: Allow
-              Action:
-                - rds-data:ExecuteStatement
-              Resource: "*"
-            - Effect: Allow
-              Action:
-                - secretsmanager:GetSecretValue
-              Resource: !Ref DbSecret
+          DB_HOST: !ImportValue Registrar-DbHost
+          DB_PORT: !ImportValue Registrar-DbPort
+          DB_NAME: !ImportValue Registrar-DbName
+          DB_USER: !ImportValue Registrar-DbUser
+          DB_PASS: !ImportValue Registrar-DbPass
       Events:
         Register:
           Type: Api
@@ -93,7 +82,3 @@ Resources:
 Outputs:
   ApiBaseUrl:
     Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod"
-  DbClusterArn:
-    Value: !Ref DbCluster
-  SecretArn:
-    Value: !Ref DbSecret

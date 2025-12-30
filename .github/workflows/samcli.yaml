@@ -36,13 +36,14 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --region us-east-1
 
-      # - name: SAM Build
-      #   run: |
-      #     sam build
-      #     sam deploy \
-      #         --stack-name aurora \
-      #         --region us-east-1 \
-      #         --capabilities CAPABILITY_IAM \
-      #         --resolve-s3 \
-      #         --no-confirm-changeset \
-      #         --no-fail-on-empty-changeset
+      - name: SAM Build
+        run: |
+          sam build --use-container
+
+          sam deploy \
+            --stack-name registrar-app \
+            --resolve-s3 \
+            --capabilities CAPABILITY_IAM \
+            --region us-east-1 \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset
