@@ -28,13 +28,21 @@ jobs:
           pipx install aws-sam-cli
           sam --version
 
-      - name: SAM Build
+      - name: Infra
         run: |
-          sam build
-          sam deploy \
-              --stack-name aurora \
-              --region us-east-1 \
-              --capabilities CAPABILITY_IAM \
-              --resolve-s3 \
-              --no-confirm-changeset \
-              --no-fail-on-empty-changeset
+          aws cloudformation deploy \
+            --stack-name aurora-infra \
+            --template-file infra.yaml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region us-east-1
+
+      # - name: SAM Build
+      #   run: |
+      #     sam build
+      #     sam deploy \
+      #         --stack-name aurora \
+      #         --region us-east-1 \
+      #         --capabilities CAPABILITY_IAM \
+      #         --resolve-s3 \
+      #         --no-confirm-changeset \
+      #         --no-fail-on-empty-changeset

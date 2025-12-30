@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Infra stack (VPC + Aurora PostgreSQL Serverless v2 + Secret + Data API)
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.10.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.10.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.10.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+
+  DbSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Aurora SG (Data API, no inbound needed)
+      VpcId: !Ref Vpc
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Aurora subnets
+      SubnetIds: [!Ref SubnetA, !Ref SubnetB]
+
+  DbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: aurora-registrar-secret
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"postgres"}'
+        GenerateStringKey: "password"
+        PasswordLength: 24
+        ExcludePunctuation: true
+
+  DbCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      EngineMode: provisioned
+      DatabaseName: appdb
+      EnableHttpEndpoint: true
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VpcSecurityGroupIds: [!Ref DbSg]
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 1
+
+  DbInstanceWriter:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: aurora-postgresql
+      DBClusterIdentifier: !Ref DbCluster
+      DBInstanceClass: db.serverless
+      PubliclyAccessible: false
+
+Outputs:
+  DbClusterArn:
+    Value: !GetAtt DbCluster.DBClusterArn
+    Export:
+      Name: AuroraRegistrar-DbClusterArn
+
+  SecretArn:
+    Value: !Ref DbSecret
+    Export:
+      Name: AuroraRegistrar-SecretArn
+
+  DbName:
+    Value: appdb
+    Export:
+      Name: AuroraRegistrar-DbName
