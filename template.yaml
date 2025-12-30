@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Aurora Serverless v1 Username Registrar (API Gateway + Lambda + Data API)
+Description: Aurora Serverless v1 (PostgreSQL) Username Registrar (API Gateway + Lambda + Data API)
 
 Globals:
   Function:
@@ -20,7 +20,7 @@ Resources:
     Properties:
       Name: aurora-registrar-secret
       GenerateSecretString:
-        SecretStringTemplate: '{"username":"admin"}'
+        SecretStringTemplate: '{"username":"postgres"}'
         GenerateStringKey: "password"
         PasswordLength: 24
         ExcludePunctuation: true
@@ -28,7 +28,7 @@ Resources:
   DbCluster:
     Type: AWS::RDS::DBCluster
     Properties:
-      Engine: aurora-mysql
+      Engine: aurora-postgresql
       EngineMode: serverless
       DatabaseName: appdb
       MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
@@ -36,7 +36,7 @@ Resources:
       EnableHttpEndpoint: true
       ScalingConfiguration:
         AutoPause: true
-        MinCapacity: 1
+        MinCapacity: 2
         MaxCapacity: 2
         SecondsUntilAutoPause: 300
 

@@ -11,20 +11,18 @@ DB_NAME = os.environ["DB_NAME"]
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS registrations (
   username VARCHAR(64) PRIMARY KEY,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
 
 
 def init_schema_handler(event, context):
-    # CloudFormation custom resource: run once on create/update
     rds.execute_statement(
         resourceArn=DB_ARN,
         secretArn=SECRET_ARN,
         database=DB_NAME,
         sql=SCHEMA_SQL,
     )
-    # Minimal custom resource response (enough for CFN)
     return {"PhysicalResourceId": "InitSchema", "Data": {"status": "ok"}}
 
 
@@ -42,6 +40,4 @@ def register_handler(event, context):
         )
         return {"statusCode": 201, "body": json.dumps({"username": username, "status": "reserved"})}
     except Exception:
-        # In the “small lab” spirit: treat any insert error as "taken".
-        # In a production version you'd inspect the SQL error code.
         return {"statusCode": 409, "body": json.dumps({"username": username, "status": "taken"})}
